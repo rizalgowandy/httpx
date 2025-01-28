@@ -10,6 +10,7 @@ import (
 
 // Response contains the response to a server
 type Response struct {
+	Input         string // input that was given
 	StatusCode    int
 	Headers       map[string][]string
 	RawData       []byte // undecoded data
@@ -21,6 +22,7 @@ type Response struct {
 	Lines         int
 	TLSData       *clients.Response
 	CSPData       *CSPData
+	BodyDomains   *BodyDomain
 	HTTP2         bool
 	Pipeline      bool
 	Duration      time.Duration
@@ -42,7 +44,6 @@ func (r *Response) GetHeader(name string) string {
 	if ok {
 		return strings.Join(v, " ")
 	}
-
 	return ""
 }
 
@@ -69,9 +70,13 @@ func (r *Response) GetChainStatusCodes() []int {
 // GetChain dump the whole redirect chain as string
 func (r *Response) GetChain() string {
 	var respchain strings.Builder
-	for _, chainItem := range r.Chain {
-		respchain.Write(chainItem.Request)
-		respchain.Write(chainItem.Response)
+	for counter, chainItem := range r.Chain {
+		if counter != 0 {
+			respchain.Write(chainItem.Request)
+		}
+		if counter < len(r.Chain)-1 {
+			respchain.Write(chainItem.Response)
+		}
 	}
 	return respchain.String()
 }

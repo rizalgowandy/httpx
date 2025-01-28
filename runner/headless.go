@@ -3,15 +3,16 @@ package runner
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/launcher/flags"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/pkg/errors"
 	fileutil "github.com/projectdiscovery/utils/file"
 	osutils "github.com/projectdiscovery/utils/os"
-	processutil "github.com/projectdiscovery/utils/process"
 )
 
 // MustDisableSandbox determines if the current os and user needs sandbox mode disabled
@@ -24,19 +25,22 @@ func MustDisableSandbox() bool {
 type Browser struct {
 	tempDir string
 	engine  *rod.Browser
-	pids    map[int32]struct{}
+	// TODO: Remove the Chrome PID kill code in favor of using Leakless(true).
+	// This change will be made if there are no complaints about zombie Chrome processes.
+	// Reference: https://github.com/projectdiscovery/httpx/pull/1426
+	// pids    map[int32]struct{}
 }
 
-func NewBrowser(proxy string, useLocal bool) (*Browser, error) {
+func NewBrowser(proxy string, useLocal bool, optionalArgs map[string]string) (*Browser, error) {
 	dataStore, err := os.MkdirTemp("", "nuclei-*")
 	if err != nil {
 		return nil, errors.Wrap(err, "could not create temporary directory")
 	}
 
-	pids := processutil.FindProcesses(processutil.IsChromeProcess)
+	// pids := processutil.FindProcesses(processutil.IsChromeProcess)
 
 	chromeLauncher := launcher.New().
-		Leakless(false).
+		Leakless(true).
 		Set("disable-gpu", "true").
 		Set("ignore-certificate-errors", "true").
 		Set("ignore-certificate-errors", "1").
@@ -72,6 +76,11 @@ func NewBrowser(proxy string, useLocal bool) (*Browser, error) {
 	if proxy != "" {
 		chromeLauncher = chromeLauncher.Proxy(proxy)
 	}
+
+	for k, v := range optionalArgs {
+		chromeLauncher.Set(flags.Flag(k), v)
+	}
+
 	launcherURL, err := chromeLauncher.Launch()
 	if err != nil {
 		return nil, err
@@ -85,16 +94,26 @@ func NewBrowser(proxy string, useLocal bool) (*Browser, error) {
 	engine := &Browser{
 		tempDir: dataStore,
 		engine:  browser,
-		pids:    pids,
+		// pids:    pids,
 	}
 	return engine, nil
 }
 
-func (b *Browser) ScreenshotWithBody(url string, timeout time.Duration) ([]byte, string, error) {
+func (b *Browser) ScreenshotWithBody(url string, timeout time.Duration, idle time.Duration, headers []string) ([]byte, string, error) {
 	page, err := b.engine.Page(proto.TargetCreateTarget{})
 	if err != nil {
 		return nil, "", err
 	}
+	for _, header := range headers {
+		headerParts := strings.SplitN(header, ":", 2)
+		if len(headerParts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(headerParts[0])
+		value := strings.TrimSpace(headerParts[1])
+		_, _ = page.SetExtraHeaders([]string{key, value})
+	}
+
 	page = page.Timeout(timeout)
 	defer page.Close()
 
@@ -102,12 +121,12 @@ func (b *Browser) ScreenshotWithBody(url string, timeout time.Duration) ([]byte,
 		return nil, "", err
 	}
 
-	page.Timeout(2 * time.Second).WaitNavigation(proto.PageLifecycleEventNameFirstMeaningfulPaint)()
+	page.Timeout(5 * time.Second).WaitNavigation(proto.PageLifecycleEventNameFirstMeaningfulPaint)()
 
 	if err := page.WaitLoad(); err != nil {
 		return nil, "", err
 	}
-	_ = page.WaitIdle(1 * time.Second)
+	_ = page.WaitIdle(idle)
 
 	screenshot, err := page.Screenshot(true, &proto.PageCaptureScreenshot{})
 	if err != nil {
@@ -125,5 +144,5 @@ func (b *Browser) ScreenshotWithBody(url string, timeout time.Duration) ([]byte,
 func (b *Browser) Close() {
 	b.engine.Close()
 	os.RemoveAll(b.tempDir)
-	processutil.CloseProcesses(processutil.IsChromeProcess, b.pids)
+	// processutil.CloseProcesses(processutil.IsChromeProcess, b.pids)
 }
